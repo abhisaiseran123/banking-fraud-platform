@@ -37,6 +37,9 @@ import joblib
 import pandas as pd
 from pathlib import Path
 
+from kafka import KafkaProducer
+import json
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
 from pyspark.sql.types import (
@@ -45,6 +48,7 @@ from pyspark.sql.types import (
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 KAFKA_TOPIC = "bank-transactions-ml"
+SCORED_TOPIC = "fraud-scored-transactions"   # NEW: where scored results get published for the dashboard
 
 MODEL_DIR = Path(__file__).parent.parent / "ml"
 PREPROCESSOR_PATH = MODEL_DIR / "fraud_preprocessor1.pkl"
@@ -107,7 +111,7 @@ def add_engineered_features(pdf: pd.DataFrame) -> pd.DataFrame:
     return pdf
 
 
-def make_batch_processor(preprocessor, model):
+def make_batch_processor(preprocessor, model, result_producer):
     """Returns the function foreachBatch will call for every micro-batch."""
 
     def process_batch(spark_df, batch_id):
@@ -128,6 +132,24 @@ def make_batch_processor(preprocessor, model):
         pdf["fraud_probability"] = fraud_probabilities
         pdf["predicted_fraud"] = (fraud_probabilities >= FRAUD_THRESHOLD).astype(int)
 
+        # Publish EVERY scored transaction (not just flagged ones) to a new
+        # topic - the dashboard needs the full live feed, not just alerts,
+        # to show an accurate real-time picture.
+        for _, row in pdf.iterrows():
+            result_producer.send(SCORED_TOPIC, value={
+                "transaction_id": row["transaction_id"],
+                "account_id": row["account_id"],
+                "transaction_amount": float(row["transaction_amount"]),
+                "merchant_category": row["merchant_category"],
+                "transaction_country": row["transaction_country"],
+                "customer_risk_score": float(row["customer_risk_score"]),
+                "fraud_probability": float(row["fraud_probability"]),
+                "predicted_fraud": int(row["predicted_fraud"]),
+                "is_fraud_actual": bool(row["is_fraud_actual"]),
+                "timestamp": row["timestamp"],
+            })
+        result_producer.flush()
+
         flagged = pdf[pdf["predicted_fraud"] == 1]
         if len(flagged) > 0:
             print(f"\n--- Batch {batch_id}: {len(flagged)} flagged out of {len(pdf)} ---")
@@ -146,6 +168,14 @@ def main():
     preprocessor = joblib.load(PREPROCESSOR_PATH)
     model = joblib.load(MODEL_PATH)
     print("Loaded successfully.\n")
+
+    # A plain kafka-python producer (same tool our other producers use) -
+    # this is separate from Spark's own Kafka reading mechanism. We use it
+    # to publish OUR results (predictions), not to read data.
+    result_producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+    )
 
     spark = (
         SparkSession.builder
@@ -174,7 +204,7 @@ def main():
     query = (
         transactions
         .writeStream
-        .foreachBatch(make_batch_processor(preprocessor, model))
+        .foreachBatch(make_batch_processor(preprocessor, model, result_producer))
         .outputMode("update")
         .start()
     )

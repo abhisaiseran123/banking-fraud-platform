@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fraud Detection - Live Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --border: #2a2e3a;
+    --text: #e6e8ef;
+    --muted: #8b90a0;
+    --green: #34d399;
+    --red: #f87171;
+    --amber: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  .stats {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    min-width: 140px;
+  }
+  .stat-label {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    margin-top: 4px;
+  }
+  .stat-value.red { color: var(--red); }
+  .stat-value.green { color: var(--green); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  tr.fraud-row { background: rgba(248, 113, 113, 0.08); }
+  tr.new-row { animation: flash 1.2s ease-out; }
+  @keyframes flash {
+    from { background: rgba(52, 211, 153, 0.25); }
+    to { background: transparent; }
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge.fraud { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+  .badge.genuine { background: rgba(139, 144, 160, 0.15); color: var(--muted); }
+  .badge.actual-fraud { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+  .prob-bar-bg {
+    width: 60px;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  .prob-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--red);
+  }
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+</style>
+</head>
+<body>
+
+<h1><span class="status-dot"></span>Fraud Detection - Live Feed</h1>
+<div class="subtitle">Real-time transactions scored by your trained XGBoost model</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="stat-label">Total Scored</div>
+    <div class="stat-value" id="stat-total">{{ stats.total }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Flagged Fraud</div>
+    <div class="stat-value red" id="stat-flagged">{{ stats.flagged }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Flag Rate</div>
+    <div class="stat-value" id="stat-rate">0%</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Account</th>
+      <th>Amount</th>
+      <th>Merchant</th>
+      <th>Country</th>
+      <th>Risk Score</th>
+      <th>Fraud Probability</th>
+      <th>Model Verdict</th>
+      <th>Actual</th>
+    </tr>
+  </thead>
+  <tbody id="txn-body">
+    {% for txn in initial_transactions %}
+    <tr class="{{ 'fraud-row' if txn.predicted_fraud == 1 else '' }}">
+      <td>{{ txn.account_id }}</td>
+      <td>${{ "%.2f"|format(txn.transaction_amount) }}</td>
+      <td>{{ txn.merchant_category }}</td>
+      <td>{{ txn.transaction_country }}</td>
+      <td>{{ txn.customer_risk_score }}</td>
+      <td>
+        <span class="prob-bar-bg"><span class="prob-bar-fill" style="width: {{ (txn.fraud_probability * 100)|round|int }}%"></span></span>
+        {{ "%.1f"|format(txn.fraud_probability * 100) }}%
+      </td>
+      <td><span class="badge {{ 'fraud' if txn.predicted_fraud == 1 else 'genuine' }}">{{ 'FRAUD' if txn.predicted_fraud == 1 else 'genuine' }}</span></td>
+      <td>{% if txn.is_fraud_actual %}<span class="badge actual-fraud">actual fraud</span>{% else %}-{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<script>
+const MAX_ROWS = 50;
+const tbody = document.getElementById("txn-body");
+const source = new EventSource("/stream");
+
+source.onmessage = function(event) {
+  const payload = JSON.parse(event.data);
+  const txn = payload.txn;
+  const stats = payload.stats;
+
+  document.getElementById("stat-total").textContent = stats.total;
+  document.getElementById("stat-flagged").textContent = stats.flagged;
+  const rate = stats.total > 0 ? ((stats.flagged / stats.total) * 100).toFixed(1) : 0;
+  document.getElementById("stat-rate").textContent = rate + "%";
+
+  const row = document.createElement("tr");
+  row.className = "new-row" + (txn.predicted_fraud === 1 ? " fraud-row" : "");
+
+  const probPct = Math.round(txn.fraud_probability * 100);
+  row.innerHTML = `
+    <td>${txn.account_id}</td>
+    <td>$${txn.transaction_amount.toFixed(2)}</td>
+    <td>${txn.merchant_category}</td>
+    <td>${txn.transaction_country}</td>
+    <td>${txn.customer_risk_score}</td>
+    <td>
+      <span class="prob-bar-bg"><span class="prob-bar-fill" style="width:${probPct}%"></span></span>
+      ${(txn.fraud_probability * 100).toFixed(1)}%
+    </td>
+    <td><span class="badge ${txn.predicted_fraud === 1 ? 'fraud' : 'genuine'}">${txn.predicted_fraud === 1 ? 'FRAUD' : 'genuine'}</span></td>
+    <td>${txn.is_fraud_actual ? '<span class="badge actual-fraud">actual fraud</span>' : '-'}</td>
+  `;
+
+  tbody.insertBefore(row, tbody.firstChild);
+
+  while (tbody.rows.length > MAX_ROWS) {
+    tbody.deleteRow(tbody.rows.length - 1);
+  }
+};
+</script>
+
+</body>
+</html>
