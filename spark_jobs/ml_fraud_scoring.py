@@ -48,7 +48,15 @@ from pyspark.sql.types import (
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 KAFKA_TOPIC = "bank-transactions-ml"
-SCORED_TOPIC = "fraud-scored-transactions"   # NEW: where scored results get published for the dashboard
+SCORED_TOPIC = "fraud-scored-transactions"
+
+# STAGE 4: instead of writing Delta tables locally (which hit repeated
+# Windows/JVM socket errors), we export scored transactions to a plain
+# JSON-lines file. This file gets uploaded to Databricks periodically,
+# where Bronze/Silver/Gold Delta tables actually get built - Databricks
+# has Delta Lake fully built in, no local setup needed at all.
+EXPORT_DIR = Path(__file__).parent.parent / "delta_export"
+EXPORT_FILE = EXPORT_DIR / "scored_transactions.jsonl"
 
 MODEL_DIR = Path(__file__).parent.parent / "ml"
 PREPROCESSOR_PATH = MODEL_DIR / "fraud_preprocessor1.pkl"
@@ -131,6 +139,17 @@ def make_batch_processor(preprocessor, model, result_producer):
 
         pdf["fraud_probability"] = fraud_probabilities
         pdf["predicted_fraud"] = (fraud_probabilities >= FRAUD_THRESHOLD).astype(int)
+
+        # --- EXPORT FOR DATABRICKS: append every scored transaction to a
+        # plain local file, exactly as produced. This is our simple "bridge"
+        # between the local live demo and Databricks, where the real
+        # Bronze/Silver/Gold Delta tables get built.
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        export_pdf = pdf.copy()
+        export_pdf["timestamp"] = export_pdf["timestamp"].astype(str)
+        with open(EXPORT_FILE, "a") as f:
+            for _, row in export_pdf.iterrows():
+                f.write(row.to_json() + "\n")
 
         # Publish EVERY scored transaction (not just flagged ones) to a new
         # topic - the dashboard needs the full live feed, not just alerts,
