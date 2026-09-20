@@ -33,12 +33,17 @@ HOW TO RUN:
     (then, in another terminal) python producer/kafka_producer_ml.py
 """
 
+import sys
 import joblib
 import pandas as pd
 from pathlib import Path
 
-from kafka import KafkaProducer
+sys.path.insert(0, str(Path(__file__).parent.parent))   # so we can import kafka_config from project root
+
 import json
+from kafka import KafkaProducer
+
+from kafka_config import KAFKA_CONNECTION_KWARGS, REDPANDA_BOOTSTRAP_SERVERS, REDPANDA_USERNAME, REDPANDA_PASSWORD
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
@@ -46,15 +51,11 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, IntegerType, BooleanType,
 )
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 KAFKA_TOPIC = "bank-transactions-ml"
-SCORED_TOPIC = "fraud-scored-transactions"
+SCORED_TOPIC = "fraud-scored-transactions."   # NOTE: real topic name has a trailing dot
 
-# STAGE 4: instead of writing Delta tables locally (which hit repeated
-# Windows/JVM socket errors), we export scored transactions to a plain
-# JSON-lines file. This file gets uploaded to Databricks periodically,
-# where Bronze/Silver/Gold Delta tables actually get built - Databricks
-# has Delta Lake fully built in, no local setup needed at all.
+# Local export, still useful as a durable record and for the upcoming
+# Databricks Bronze/Silver/Gold stage - kept alongside the live Kafka publish.
 EXPORT_DIR = Path(__file__).parent.parent / "delta_export"
 EXPORT_FILE = EXPORT_DIR / "scored_transactions.jsonl"
 
@@ -140,10 +141,8 @@ def make_batch_processor(preprocessor, model, result_producer):
         pdf["fraud_probability"] = fraud_probabilities
         pdf["predicted_fraud"] = (fraud_probabilities >= FRAUD_THRESHOLD).astype(int)
 
-        # --- EXPORT FOR DATABRICKS: append every scored transaction to a
-        # plain local file, exactly as produced. This is our simple "bridge"
-        # between the local live demo and Databricks, where the real
-        # Bronze/Silver/Gold Delta tables get built.
+        # --- EXPORT: append every scored transaction to a local file too -
+        # a durable record, and feeds the upcoming Databricks stage.
         EXPORT_DIR.mkdir(parents=True, exist_ok=True)
         export_pdf = pdf.copy()
         export_pdf["timestamp"] = export_pdf["timestamp"].astype(str)
@@ -151,10 +150,13 @@ def make_batch_processor(preprocessor, model, result_producer):
             for _, row in export_pdf.iterrows():
                 f.write(row.to_json() + "\n")
 
-        # Publish EVERY scored transaction (not just flagged ones) to a new
-        # topic - the dashboard needs the full live feed, not just alerts,
-        # to show an accurate real-time picture.
-        for _, row in pdf.iterrows():
+        # --- PUBLISH to Kafka so the dashboard can show it live ---
+        result_cols = [
+            "transaction_id", "account_id", "transaction_amount", "merchant_category",
+            "transaction_country", "customer_risk_score", "fraud_probability",
+            "predicted_fraud", "is_fraud_actual", "timestamp",
+        ]
+        for _, row in pdf[result_cols].iterrows():
             result_producer.send(SCORED_TOPIC, value={
                 "transaction_id": row["transaction_id"],
                 "account_id": row["account_id"],
@@ -165,7 +167,7 @@ def make_batch_processor(preprocessor, model, result_producer):
                 "fraud_probability": float(row["fraud_probability"]),
                 "predicted_fraud": int(row["predicted_fraud"]),
                 "is_fraud_actual": bool(row["is_fraud_actual"]),
-                "timestamp": row["timestamp"],
+                "timestamp": str(row["timestamp"]),
             })
         result_producer.flush()
 
@@ -188,11 +190,13 @@ def main():
     model = joblib.load(MODEL_PATH)
     print("Loaded successfully.\n")
 
-    # A plain kafka-python producer (same tool our other producers use) -
-    # this is separate from Spark's own Kafka reading mechanism. We use it
-    # to publish OUR results (predictions), not to read data.
+    # Plain kafka-python producer for publishing scored results - the
+    # earlier failures publishing to this topic were caused by a typo in
+    # the topic name (a trailing dot we'd missed), not by this approach
+    # itself. Now that the name is corrected, this simple, direct method
+    # works fine.
     result_producer = KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        **KAFKA_CONNECTION_KWARGS,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
 
@@ -204,12 +208,40 @@ def main():
     )
     spark.sparkContext.setLogLevel("WARN")
 
+    # Spark's Kafka connector needs auth passed as a Java-style config
+    # string (JAAS config) rather than plain Python arguments - this is
+    # just how Spark/Kafka's underlying Java client expects credentials.
+    # We use this SAME config for both reading (below) and writing (inside
+    # process_batch) - one proven-working auth path for both directions.
+    jaas_config = (
+        'org.apache.kafka.common.security.scram.ScramLoginModule required '
+        f'username="{REDPANDA_USERNAME}" password="{REDPANDA_PASSWORD}";'
+    )
+
     raw_stream = (
         spark.readStream
         .format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
+        .option("kafka.bootstrap.servers", REDPANDA_BOOTSTRAP_SERVERS)
+        .option("kafka.security.protocol", "SASL_SSL")
+        .option("kafka.sasl.mechanism", "SCRAM-SHA-256")
+        .option("kafka.sasl.jaas.config", jaas_config)
         .option("subscribe", KAFKA_TOPIC)
         .option("startingOffsets", "latest")
+        # --- Resilience settings for a long-distance/higher-latency connection ---
+        # Spark's Kafka client defaults assume a fast local network. Over a
+        # real internet connection (e.g. India <-> US East), those defaults
+        # can be too short, causing the client to give up instead of
+        # retrying through a brief hiccup.
+        .option("kafka.session.timeout.ms", "45000")
+        .option("kafka.request.timeout.ms", "60000")
+        .option("kafka.connections.max.idle.ms", "300000")
+        .option("kafka.reconnect.backoff.ms", "1000")
+        .option("kafka.reconnect.backoff.max.ms", "10000")
+        .option("kafka.retry.backoff.ms", "1000")
+        .option("failOnDataLoss", "false")
+        # Limit how much data we pull per micro-batch - smaller, more
+        # frequent round trips are less likely to time out than large ones.
+        .option("maxOffsetsPerTrigger", "50")
         .load()
     )
 

@@ -29,14 +29,19 @@ HOW TO RUN:
 
 import json
 import random
+import sys
 import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))   # so we can import kafka_config from project root
 
 from kafka import KafkaProducer
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+from kafka_config import KAFKA_CONNECTION_KWARGS
+
 KAFKA_TOPIC = "bank-transactions-ml"   # separate topic from the simple stream
 
 NUM_ACCOUNTS = 150
@@ -158,7 +163,7 @@ def main():
     accounts = build_account_pool(NUM_ACCOUNTS)
 
     producer = KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        **KAFKA_CONNECTION_KWARGS,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
 

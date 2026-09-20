@@ -8,3 +8,6 @@ venv/
 data/*.jsonl
 data/*.json
 data/*.csv
+delta/
+.env
+delta_export/

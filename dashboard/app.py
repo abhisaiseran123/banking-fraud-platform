@@ -27,14 +27,19 @@ Then open http://localhost:5000 in your browser.
 
 import json
 import queue
+import sys
 import threading
 from collections import deque
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))   # so we can import kafka_config from project root
 
 from flask import Flask, Response, render_template
 from kafka import KafkaConsumer
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-SCORED_TOPIC = "fraud-scored-transactions"
+from kafka_config import KAFKA_CONNECTION_KWARGS
+
+SCORED_TOPIC = "fraud-scored-transactions."   # NOTE: real topic name has a trailing dot
 MAX_HISTORY = 200   # how many recent transactions to keep in memory
 
 app = Flask(__name__)
@@ -52,7 +57,7 @@ def kafka_listener():
     each new transaction out to every connected browser tab."""
     consumer = KafkaConsumer(
         SCORED_TOPIC,
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        **KAFKA_CONNECTION_KWARGS,
         auto_offset_reset="latest",
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
     )
