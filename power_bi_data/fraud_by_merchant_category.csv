@@ -1,0 +1,11 @@
+merchant_category,total_transactions,flagged_count,flag_rate_pct,total_amount
+gambling,408,99,24.26,45654.14
+luxury_goods,408,70,17.16,45166.24
+electronics,352,22,6.25,42806.52
+restaurant,370,22,5.95,41787.71
+fuel,357,21,5.88,42042.23
+digital_subscriptions,357,19,5.32,39383.73
+grocery,366,16,4.37,44459.49
+online_services,363,14,3.86,40209.27
+fashion,373,14,3.75,42268.04
+travel,348,11,3.16,40133.28
