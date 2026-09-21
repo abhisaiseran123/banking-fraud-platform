@@ -1,0 +1,46 @@
+name: CI
+
+# WHEN THIS RUNS:
+# On every push to main, and every pull request targeting main. This is
+# the automatic checklist that runs BEFORE bad code can reach your live
+# pipeline - exactly the "CI/CD" box in your original architecture diagram.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # We install only the packages actually needed for linting/testing -
+      # not the full requirements.txt (which includes heavy, slow-to-install
+      # packages like pyspark and xgboost that aren't needed just to run
+      # these pure-logic unit tests). Keeps CI fast.
+      - name: Install test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install flake8 pytest Faker pandas
+
+      # flake8 checks for syntax errors and basic style issues across the
+      # whole codebase. --select=E9,F63,F7,F82 focuses on ACTUAL BUGS
+      # (undefined names, syntax errors) rather than nitpicky style
+      # preferences, which keeps this useful without being noisy.
+      - name: Lint for syntax errors and undefined names
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=venv,__pycache__
+
+      # Runs our unit tests - pure logic only, no live credentials needed.
+      - name: Run unit tests
+        run: |
+          pytest tests/ -v
