@@ -1,0 +1,14 @@
+[Unit]
+Description=Fraud Detection Spark Scoring Job
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/banking-fraud-platform
+ExecStart=/home/ubuntu/banking-fraud-platform/venv/bin/python spark_jobs/ml_fraud_scoring.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

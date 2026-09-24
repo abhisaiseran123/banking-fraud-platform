@@ -1,0 +1,14 @@
+[Unit]
+Description=Fraud Detection Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/banking-fraud-platform
+ExecStart=/home/ubuntu/banking-fraud-platform/venv/bin/python dashboard/app.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
