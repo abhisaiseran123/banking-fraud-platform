@@ -103,10 +103,13 @@ def stream():
 
     return Response(event_stream(), mimetype="text/event-stream")
 
+# Start the Kafka listener unconditionally at import time - this runs
+# whether the app is launched directly (python app.py) OR imported by
+# Gunicorn (which never executes the __main__ block below).
+
+listener_thread = threading.Thread(target=kafka_listener, daemon=True)
+listener_thread.start()
 
 if __name__ == "__main__":
-    listener_thread = threading.Thread(target=kafka_listener, daemon=True)
-    listener_thread.start()
-
     print("Dashboard running at http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, threaded=True)
